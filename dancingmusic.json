@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "connector",
+  "id": "netease-cloud-music-account",
+  "name": "NetEase Cloud Music Account",
+  "summary": "Desktop NetEase account catalog through a host-owned isolated provider session.",
+  "version": "0.2.0",
+  "publisher": {
+    "name": "DancingMusic",
+    "url": "https://github.com/DancingMusic"
+  },
+  "repository": "https://github.com/DancingMusic/MusicConnect-NetEase-Account",
+  "license": {
+    "name": "MIT",
+    "url": "https://github.com/DancingMusic/MusicConnect-NetEase-Account/blob/main/LICENSE"
+  },
+  "protocol": {
+    "package": "@dancingmusic/music-connect",
+    "range": ">=0.2.0"
+  },
+  "artifact": {
+    "url": "https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-NetEase-Account@v0.2.0/dist/index.js",
+    "integrity": "sha256-cXfwp32gnw07Idmg3qHxaJid7bA3Ke5c8oAJ6diL0pw="
+  },
+  "capabilities": [
+    "search",
+    "stream",
+    "lyrics",
+    "playlist",
+    "login"
+  ],
+  "permissions": {
+    "networkOrigins": [],
+    "account": true
+  },
+  "connector": {
+    "familyId": "netease-cloud-music",
+    "variant": "account",
+    "authRequirement": "required",
+    "platforms": [
+      "desktop"
+    ]
+  },
+  "tags": [
+    "netease",
+    "account",
+    "qr-login",
+    "official-provider"
+  ]
+}

@@ -1,3 +1,30 @@
+import type { MusicConnectorHostContext } from "@dancingmusic/music-connect";
+
+export interface NeteaseArtist {
+  id: number;
+  name: string;
+}
+
+export interface NeteaseAlbum {
+  id: number;
+  name: string;
+  picUrl?: string;
+  blurPicUrl?: string;
+}
+
+export interface NeteaseSong {
+  id: number;
+  name: string;
+  ar?: NeteaseArtist[];
+  artists?: NeteaseArtist[];
+  al?: NeteaseAlbum;
+  album?: NeteaseAlbum;
+  dt?: number;
+  duration?: number;
+  fee?: number;
+  privilege?: { maxBrRate?: number };
+}
+
 export interface NeteaseSearchResponse {
   result: {
     songs: NeteaseSong[];
@@ -6,23 +33,13 @@ export interface NeteaseSearchResponse {
   code: number;
 }
 
-export interface NeteaseSong {
-  id: number;
-  name: string;
-  ar: { id: number; name: string }[];
-  al: { id: number; name: string; picUrl?: string };
-  dt: number;
-  fee: number;
-  privilege?: { maxBrRate?: number };
-}
-
 export interface NeteaseDetailResponse {
   songs: NeteaseSong[];
   code: number;
 }
 
 export interface NeteaseUrlResponse {
-  data: { id: number; url: string | null; br: number; type: string; expi: number }[];
+  data: { id: number; url: string | null; br: number; type: string | null; expi: number }[];
   code: number;
 }
 
@@ -30,73 +47,6 @@ export interface NeteaseLyricResponse {
   lrc?: { lyric: string };
   tlyric?: { lyric: string };
   code: number;
-}
-
-export class NeteaseApi {
-  private baseUrl: string;
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-  }
-
-  private async request<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
-    const url = new URL(path, this.baseUrl);
-    for (const [k, v] of Object.entries(params)) {
-      url.searchParams.set(k, String(v));
-    }
-    const res = await fetch(url.toString(), {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      throw new Error(`Netease API error: ${res.status} ${res.statusText}`);
-    }
-    return res.json() as Promise<T>;
-  }
-
-  async search(keyword: string, page = 1, pageSize = 20): Promise<NeteaseSearchResponse> {
-    return this.request<NeteaseSearchResponse>("/cloudsearch", {
-      keywords: keyword,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-      type: 1,
-    });
-  }
-
-  async songDetail(ids: number[]): Promise<NeteaseDetailResponse> {
-    return this.request<NeteaseDetailResponse>("/song/detail", {
-      ids: ids.join(","),
-    });
-  }
-
-  async songUrl(id: number, br = 320000): Promise<NeteaseUrlResponse> {
-    return this.request<NeteaseUrlResponse>("/song/url/v1", {
-      id,
-      level: "higher",
-      br,
-    });
-  }
-
-  async lyric(id: number): Promise<NeteaseLyricResponse> {
-    return this.request<NeteaseLyricResponse>("/lyric", { id });
-  }
-
-  async topPlaylist(cat = "全部", page = 1, pageSize = 30, order: "hot" | "new" = "hot"): Promise<NeteasePlaylistListResponse> {
-    return this.request<NeteasePlaylistListResponse>("/top/playlist", {
-      cat,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-      order,
-    });
-  }
-
-  async playlistTrackAll(id: number, page = 1, pageSize = 30): Promise<NeteasePlaylistTracksResponse> {
-    return this.request<NeteasePlaylistTracksResponse>("/playlist/track/all", {
-      id,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-    });
-  }
-
 }
 
 export interface NeteasePlaylist {
@@ -114,7 +64,90 @@ export interface NeteasePlaylistListResponse {
   playlists: NeteasePlaylist[];
 }
 
+interface NeteasePlaylistDetailResponse {
+  code: number;
+  playlist?: {
+    trackCount?: number;
+    tracks?: NeteaseSong[];
+  };
+}
+
 export interface NeteasePlaylistTracksResponse {
   code: number;
-  songs?: NeteaseSong[];
+  total: number;
+  songs: NeteaseSong[];
+}
+
+type OfficialProviderRequest = NonNullable<MusicConnectorHostContext["officialProviderRequest"]>;
+
+export class NeteaseOfficialApi {
+  constructor(private readonly requestOfficial: OfficialProviderRequest) {}
+
+  private request<T>(operation: string, params: Record<string, unknown> = {}): Promise<T> {
+    return this.requestOfficial<T>(operation, params);
+  }
+
+  async search(keyword: string, page = 1, pageSize = 20): Promise<NeteaseSearchResponse> {
+    const result = await this.request<NeteaseSearchResponse>("netease.catalog.search", {
+      keyword,
+      page,
+      pageSize,
+    });
+    const ids = result.result?.songs?.map(song => song.id).filter(Number.isSafeInteger) ?? [];
+    if (result.code !== 200 || ids.length === 0) return result;
+
+    const detail = await this.songDetail(ids);
+    if (detail.code !== 200 || !detail.songs?.length) {
+      throw new Error("NETEASE_OFFICIAL_TRACK_DETAIL_UNAVAILABLE");
+    }
+    const byId = new Map(detail.songs.map(song => [song.id, song]));
+    return {
+      ...result,
+      result: {
+        ...result.result,
+        songs: result.result.songs.map(song => byId.get(song.id) ?? song),
+      },
+    };
+  }
+
+  songDetail(ids: number[]): Promise<NeteaseDetailResponse> {
+    return this.request<NeteaseDetailResponse>("netease.track.detail", { ids });
+  }
+
+  songUrl(id: number, bitrate = 320000): Promise<NeteaseUrlResponse> {
+    return this.request<NeteaseUrlResponse>("netease.track.stream", { id, bitrate });
+  }
+
+  lyric(id: number): Promise<NeteaseLyricResponse> {
+    return this.request<NeteaseLyricResponse>("netease.track.lyrics", { id });
+  }
+
+  topPlaylist(
+    category = "全部",
+    page = 1,
+    pageSize = 30,
+    sort: "hot" | "new" = "hot",
+  ): Promise<NeteasePlaylistListResponse> {
+    return this.request<NeteasePlaylistListResponse>("netease.playlist.list", {
+      category,
+      page,
+      pageSize,
+      sort,
+    });
+  }
+
+  async playlistTracks(id: number, page = 1, pageSize = 30): Promise<NeteasePlaylistTracksResponse> {
+    const result = await this.request<NeteasePlaylistDetailResponse>("netease.playlist.tracks", {
+      playlistId: id,
+      page,
+      pageSize,
+    });
+    const tracks = result.playlist?.tracks ?? [];
+    const offset = (page - 1) * pageSize;
+    return {
+      code: result.code,
+      songs: tracks.slice(offset, offset + pageSize),
+      total: result.playlist?.trackCount ?? tracks.length,
+    };
+  }
 }

@@ -11,8 +11,9 @@ import type {
   MusicPlaylistQuery,
   MusicConnectorLoginRequest,
   MusicConnectorLoginResult,
+  MusicConnectorHostContext,
 } from "@dancingmusic/music-connect";
-import { NeteaseApi } from "./api";
+import { NeteaseOfficialApi } from "./api";
 import type { NeteaseSong, NeteasePlaylist } from "./api";
 import { parseLrc, mergeLyrics } from "./lyrics-parser";
 
@@ -31,12 +32,17 @@ const NETEASE_COOKIE_PRIORITY = [
   "JSESSIONID-WYYY",
 ];
 
+function secureCoverUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.replace(/^http:\/\/(p[1-4]\.music\.126\.net\/)/i, "https://$1");
+}
+
 function toMusicPlaylist(p: NeteasePlaylist): MusicPlaylist {
   return {
     id: `netease-playlist:${p.id}`,
     name: p.name,
     description: p.description,
-    coverUrl: p.coverImgUrl,
+    coverUrl: secureCoverUrl(p.coverImgUrl),
     trackCount: p.trackCount,
     curator: p.creator?.nickname,
     externalUrl: `https://music.163.com/#/playlist?id=${p.id}`,
@@ -44,19 +50,20 @@ function toMusicPlaylist(p: NeteasePlaylist): MusicPlaylist {
 }
 
 export interface NeteaseAccountConnectorConfig {
-  apiBaseUrl?: string;
   /** Injected only by the host credential vault. Never ordinary config. */
   cookie?: string;
 }
 
 function toMusicTrack(song: NeteaseSong): MusicTrack {
+  const artists = song.ar ?? song.artists ?? [];
+  const album = song.al ?? song.album;
   return {
     id: `netease:${song.id}`,
     title: song.name,
-    artist: song.ar.map(a => a.name).join(", "),
-    album: song.al.name,
-    coverUrl: song.al.picUrl,
-    durationSec: Math.round(song.dt / 1000),
+    artist: artists.map(a => a.name).join(", "),
+    album: album?.name ?? "",
+    coverUrl: secureCoverUrl(album?.picUrl ?? album?.blurPicUrl),
+    durationSec: Math.round((song.dt ?? song.duration ?? 0) / 1000),
     price: 0,
     currency: "CNY",
     version: "1.0.0",
@@ -80,47 +87,26 @@ export class NeteaseAccountConnector implements MusicConnector {
   readonly meta: MusicConnectorMeta = {
     id: "netease-cloud-music-account",
     name: "网易云音乐账号版",
-    description: "Desktop NetEase account login with host-owned secure cookie capture and an isolated anonymous catalog gateway",
+    description: "Desktop NetEase account login and official catalog through a host-owned isolated provider session",
     familyId: "netease-cloud-music",
     variant: "account",
     authRequirement: "required",
     supportedHosts: ["desktop"],
-    version: "0.1.0",
+    version: "0.2.0",
     capabilities: ["search", "stream", "lyrics", "playlist", "login"],
-    configSchema: [
-      {
-        key: "apiBaseUrl",
-        label: "匿名目录 API 端点",
-        type: "url",
-        required: false,
-        placeholder: "https://your-netease-api.example.com",
-        help: "可选。仅用于匿名目录数据；账号 Cookie 永远不会发送到该网关。",
-      },
-    ],
   };
 
-  private api: NeteaseApi | null = null;
+  private api: NeteaseOfficialApi | null = null;
   private cookie = "";
 
-  async init(config?: Record<string, unknown>): Promise<void> {
+  async init(config?: Record<string, unknown>, host?: MusicConnectorHostContext): Promise<void> {
     const typed = config as NeteaseAccountConnectorConfig | undefined;
     this.cookie = typeof typed?.cookie === "string" && cookieHasNeteaseLogin(typed.cookie)
       ? typed.cookie.trim()
       : "";
-    const apiBaseUrl = typeof typed?.apiBaseUrl === "string" ? typed.apiBaseUrl.trim() : "";
-    if (!apiBaseUrl) {
-      this.api = null;
-      return;
-    }
-    const url = new URL(apiBaseUrl);
-    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) {
-      throw new Error("网易云网关必须使用 HTTPS；本地开发仅允许 loopback HTTP");
-    }
-    if (url.username || url.password || url.search || url.hash) {
-      throw new Error("网易云网关地址不能包含内嵌凭据、查询参数或片段");
-    }
-    this.api = new NeteaseApi(url.toString());
+    this.api = typeof host?.officialProviderRequest === "function"
+      ? new NeteaseOfficialApi(host.officialProviderRequest.bind(host))
+      : null;
   }
 
   async login(request: MusicConnectorLoginRequest = { intent: "status" }): Promise<MusicConnectorLoginResult> {
@@ -193,8 +179,7 @@ export class NeteaseAccountConnector implements MusicConnector {
 
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
-    if (!this.api) return { tracks: [], total: 0, page, pageSize };
-    const res = await this.api.search(keyword, page, pageSize);
+    const res = await this.requireApi().search(keyword, page, pageSize);
 
     if (res.code !== 200 || !res.result?.songs) {
       return { tracks: [], total: 0, page, pageSize };
@@ -210,9 +195,9 @@ export class NeteaseAccountConnector implements MusicConnector {
 
   async getTrack(trackId: string): Promise<MusicTrack | null> {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
+    if (!neteaseId) return null;
 
-    const res = await this.api.songDetail([neteaseId]);
+    const res = await this.requireApi().songDetail([neteaseId]);
     if (res.code !== 200 || !res.songs?.length) return null;
 
     return toMusicTrack(res.songs[0]);
@@ -220,9 +205,9 @@ export class NeteaseAccountConnector implements MusicConnector {
 
   async getStreamUrl(trackId: string): Promise<MusicStreamInfo | null> {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
+    if (!neteaseId) return null;
 
-    const res = await this.api.songUrl(neteaseId);
+    const res = await this.requireApi().songUrl(neteaseId);
     if (res.code !== 200 || !res.data?.length) return null;
 
     const item = res.data[0];
@@ -238,9 +223,9 @@ export class NeteaseAccountConnector implements MusicConnector {
 
   async getLyrics(trackId: string): Promise<MusicLyrics | null> {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
+    if (!neteaseId) return null;
 
-    const res = await this.api.lyric(neteaseId);
+    const res = await this.requireApi().lyric(neteaseId);
     if (res.code !== 200 || !res.lrc?.lyric) return null;
 
     const original = parseLrc(res.lrc.lyric);
@@ -264,8 +249,7 @@ export class NeteaseAccountConnector implements MusicConnector {
     const cat = query.category || "全部";
     // NetEase supports `hot` (default) and `new`. Treat `trending` as hot.
     const order: "hot" | "new" = query.sort === "new" ? "new" : "hot";
-    if (!this.api) return { playlists: [], total: 0, page, pageSize };
-    const res = await this.api.topPlaylist(cat, page, pageSize, order);
+    const res = await this.requireApi().topPlaylist(cat, page, pageSize, order);
     if (res.code !== 200 || !res.playlists) {
       return { playlists: [], total: 0, page, pageSize };
     }
@@ -284,17 +268,23 @@ export class NeteaseAccountConnector implements MusicConnector {
     const id = this.parsePlaylistId(playlistId);
     const page = opts.page ?? 1;
     const pageSize = opts.pageSize ?? 30;
-    if (!id || !this.api) return { tracks: [], total: 0, page, pageSize };
-    const res = await this.api.playlistTrackAll(id, page, pageSize);
+    if (!id) return { tracks: [], total: 0, page, pageSize };
+    const res = await this.requireApi().playlistTracks(id, page, pageSize);
     if (res.code !== 200 || !res.songs) {
       return { tracks: [], total: 0, page, pageSize };
     }
     return {
       tracks: res.songs.map(toMusicTrack),
-      total: res.songs.length, // upstream doesn't return total, so report what we got
+      total: res.total,
       page,
       pageSize,
     };
+  }
+
+  private requireApi(): NeteaseOfficialApi {
+    if (!this.cookie) throw new Error("NETEASE_LOGIN_REQUIRED");
+    if (!this.api) throw new Error("NETEASE_OFFICIAL_PROVIDER_UNAVAILABLE");
+    return this.api;
   }
 
   private parseId(trackId: string): number | null {

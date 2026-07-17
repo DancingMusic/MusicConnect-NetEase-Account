@@ -1,59 +1,62 @@
 // src/connectors/netease/api.ts
-var NeteaseApi = class {
-  constructor(baseUrl) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
+var NeteaseOfficialApi = class {
+  constructor(requestOfficial) {
+    this.requestOfficial = requestOfficial;
   }
-  async request(path, params = {}) {
-    const url = new URL(path, this.baseUrl);
-    for (const [k, v] of Object.entries(params)) {
-      url.searchParams.set(k, String(v));
-    }
-    const res = await fetch(url.toString(), {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(15e3)
-    });
-    if (!res.ok) {
-      throw new Error(`Netease API error: ${res.status} ${res.statusText}`);
-    }
-    return res.json();
+  request(operation, params = {}) {
+    return this.requestOfficial(operation, params);
   }
   async search(keyword, page = 1, pageSize = 20) {
-    return this.request("/cloudsearch", {
-      keywords: keyword,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-      type: 1
+    const result = await this.request("netease.catalog.search", {
+      keyword,
+      page,
+      pageSize
+    });
+    const ids = result.result?.songs?.map((song) => song.id).filter(Number.isSafeInteger) ?? [];
+    if (result.code !== 200 || ids.length === 0) return result;
+    const detail = await this.songDetail(ids);
+    if (detail.code !== 200 || !detail.songs?.length) {
+      throw new Error("NETEASE_OFFICIAL_TRACK_DETAIL_UNAVAILABLE");
+    }
+    const byId = new Map(detail.songs.map((song) => [song.id, song]));
+    return {
+      ...result,
+      result: {
+        ...result.result,
+        songs: result.result.songs.map((song) => byId.get(song.id) ?? song)
+      }
+    };
+  }
+  songDetail(ids) {
+    return this.request("netease.track.detail", { ids });
+  }
+  songUrl(id, bitrate = 32e4) {
+    return this.request("netease.track.stream", { id, bitrate });
+  }
+  lyric(id) {
+    return this.request("netease.track.lyrics", { id });
+  }
+  topPlaylist(category = "\u5168\u90E8", page = 1, pageSize = 30, sort = "hot") {
+    return this.request("netease.playlist.list", {
+      category,
+      page,
+      pageSize,
+      sort
     });
   }
-  async songDetail(ids) {
-    return this.request("/song/detail", {
-      ids: ids.join(",")
+  async playlistTracks(id, page = 1, pageSize = 30) {
+    const result = await this.request("netease.playlist.tracks", {
+      playlistId: id,
+      page,
+      pageSize
     });
-  }
-  async songUrl(id, br = 32e4) {
-    return this.request("/song/url/v1", {
-      id,
-      level: "higher",
-      br
-    });
-  }
-  async lyric(id) {
-    return this.request("/lyric", { id });
-  }
-  async topPlaylist(cat = "\u5168\u90E8", page = 1, pageSize = 30, order = "hot") {
-    return this.request("/top/playlist", {
-      cat,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-      order
-    });
-  }
-  async playlistTrackAll(id, page = 1, pageSize = 30) {
-    return this.request("/playlist/track/all", {
-      id,
-      limit: pageSize,
-      offset: (page - 1) * pageSize
-    });
+    const tracks = result.playlist?.tracks ?? [];
+    const offset = (page - 1) * pageSize;
+    return {
+      code: result.code,
+      songs: tracks.slice(offset, offset + pageSize),
+      total: result.playlist?.trackCount ?? tracks.length
+    };
   }
 };
 
@@ -101,25 +104,31 @@ var NETEASE_COOKIE_PRIORITY = [
   "WNMCID",
   "JSESSIONID-WYYY"
 ];
+function secureCoverUrl(value) {
+  if (!value) return void 0;
+  return value.replace(/^http:\/\/(p[1-4]\.music\.126\.net\/)/i, "https://$1");
+}
 function toMusicPlaylist(p) {
   return {
     id: `netease-playlist:${p.id}`,
     name: p.name,
     description: p.description,
-    coverUrl: p.coverImgUrl,
+    coverUrl: secureCoverUrl(p.coverImgUrl),
     trackCount: p.trackCount,
     curator: p.creator?.nickname,
     externalUrl: `https://music.163.com/#/playlist?id=${p.id}`
   };
 }
 function toMusicTrack(song) {
+  const artists = song.ar ?? song.artists ?? [];
+  const album = song.al ?? song.album;
   return {
     id: `netease:${song.id}`,
     title: song.name,
-    artist: song.ar.map((a) => a.name).join(", "),
-    album: song.al.name,
-    coverUrl: song.al.picUrl,
-    durationSec: Math.round(song.dt / 1e3),
+    artist: artists.map((a) => a.name).join(", "),
+    album: album?.name ?? "",
+    coverUrl: secureCoverUrl(album?.picUrl ?? album?.blurPicUrl),
+    durationSec: Math.round((song.dt ?? song.duration ?? 0) / 1e3),
     price: 0,
     currency: "CNY",
     version: "1.0.0",
@@ -141,44 +150,21 @@ var NeteaseAccountConnector = class {
     this.meta = {
       id: "netease-cloud-music-account",
       name: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u7248",
-      description: "Desktop NetEase account login with host-owned secure cookie capture and an isolated anonymous catalog gateway",
+      description: "Desktop NetEase account login and official catalog through a host-owned isolated provider session",
       familyId: "netease-cloud-music",
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.1.0",
-      capabilities: ["search", "stream", "lyrics", "playlist", "login"],
-      configSchema: [
-        {
-          key: "apiBaseUrl",
-          label: "\u533F\u540D\u76EE\u5F55 API \u7AEF\u70B9",
-          type: "url",
-          required: false,
-          placeholder: "https://your-netease-api.example.com",
-          help: "\u53EF\u9009\u3002\u4EC5\u7528\u4E8E\u533F\u540D\u76EE\u5F55\u6570\u636E\uFF1B\u8D26\u53F7 Cookie \u6C38\u8FDC\u4E0D\u4F1A\u53D1\u9001\u5230\u8BE5\u7F51\u5173\u3002"
-        }
-      ]
+      version: "0.2.0",
+      capabilities: ["search", "stream", "lyrics", "playlist", "login"]
     };
     this.api = null;
     this.cookie = "";
   }
-  async init(config) {
+  async init(config, host) {
     const typed = config;
     this.cookie = typeof typed?.cookie === "string" && cookieHasNeteaseLogin(typed.cookie) ? typed.cookie.trim() : "";
-    const apiBaseUrl = typeof typed?.apiBaseUrl === "string" ? typed.apiBaseUrl.trim() : "";
-    if (!apiBaseUrl) {
-      this.api = null;
-      return;
-    }
-    const url = new URL(apiBaseUrl);
-    const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-    if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) {
-      throw new Error("\u7F51\u6613\u4E91\u7F51\u5173\u5FC5\u987B\u4F7F\u7528 HTTPS\uFF1B\u672C\u5730\u5F00\u53D1\u4EC5\u5141\u8BB8 loopback HTTP");
-    }
-    if (url.username || url.password || url.search || url.hash) {
-      throw new Error("\u7F51\u6613\u4E91\u7F51\u5173\u5730\u5740\u4E0D\u80FD\u5305\u542B\u5185\u5D4C\u51ED\u636E\u3001\u67E5\u8BE2\u53C2\u6570\u6216\u7247\u6BB5");
-    }
-    this.api = new NeteaseApi(url.toString());
+    this.api = typeof host?.officialProviderRequest === "function" ? new NeteaseOfficialApi(host.officialProviderRequest.bind(host)) : null;
   }
   async login(request = { intent: "status" }) {
     const intent = request.intent ?? "status";
@@ -240,8 +226,7 @@ var NeteaseAccountConnector = class {
     }
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
-    if (!this.api) return { tracks: [], total: 0, page, pageSize };
-    const res = await this.api.search(keyword, page, pageSize);
+    const res = await this.requireApi().search(keyword, page, pageSize);
     if (res.code !== 200 || !res.result?.songs) {
       return { tracks: [], total: 0, page, pageSize };
     }
@@ -254,15 +239,15 @@ var NeteaseAccountConnector = class {
   }
   async getTrack(trackId) {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
-    const res = await this.api.songDetail([neteaseId]);
+    if (!neteaseId) return null;
+    const res = await this.requireApi().songDetail([neteaseId]);
     if (res.code !== 200 || !res.songs?.length) return null;
     return toMusicTrack(res.songs[0]);
   }
   async getStreamUrl(trackId) {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
-    const res = await this.api.songUrl(neteaseId);
+    if (!neteaseId) return null;
+    const res = await this.requireApi().songUrl(neteaseId);
     if (res.code !== 200 || !res.data?.length) return null;
     const item = res.data[0];
     if (!item.url) return null;
@@ -275,8 +260,8 @@ var NeteaseAccountConnector = class {
   }
   async getLyrics(trackId) {
     const neteaseId = this.parseId(trackId);
-    if (!neteaseId || !this.api) return null;
-    const res = await this.api.lyric(neteaseId);
+    if (!neteaseId) return null;
+    const res = await this.requireApi().lyric(neteaseId);
     if (res.code !== 200 || !res.lrc?.lyric) return null;
     const original = parseLrc(res.lrc.lyric);
     let timeline = original;
@@ -295,8 +280,7 @@ var NeteaseAccountConnector = class {
     const pageSize = query.pageSize ?? 30;
     const cat = query.category || "\u5168\u90E8";
     const order = query.sort === "new" ? "new" : "hot";
-    if (!this.api) return { playlists: [], total: 0, page, pageSize };
-    const res = await this.api.topPlaylist(cat, page, pageSize, order);
+    const res = await this.requireApi().topPlaylist(cat, page, pageSize, order);
     if (res.code !== 200 || !res.playlists) {
       return { playlists: [], total: 0, page, pageSize };
     }
@@ -311,18 +295,22 @@ var NeteaseAccountConnector = class {
     const id = this.parsePlaylistId(playlistId);
     const page = opts.page ?? 1;
     const pageSize = opts.pageSize ?? 30;
-    if (!id || !this.api) return { tracks: [], total: 0, page, pageSize };
-    const res = await this.api.playlistTrackAll(id, page, pageSize);
+    if (!id) return { tracks: [], total: 0, page, pageSize };
+    const res = await this.requireApi().playlistTracks(id, page, pageSize);
     if (res.code !== 200 || !res.songs) {
       return { tracks: [], total: 0, page, pageSize };
     }
     return {
       tracks: res.songs.map(toMusicTrack),
-      total: res.songs.length,
-      // upstream doesn't return total, so report what we got
+      total: res.total,
       page,
       pageSize
     };
+  }
+  requireApi() {
+    if (!this.cookie) throw new Error("NETEASE_LOGIN_REQUIRED");
+    if (!this.api) throw new Error("NETEASE_OFFICIAL_PROVIDER_UNAVAILABLE");
+    return this.api;
   }
   parseId(trackId) {
     const raw = trackId.startsWith("netease:") ? trackId.slice(8) : trackId;

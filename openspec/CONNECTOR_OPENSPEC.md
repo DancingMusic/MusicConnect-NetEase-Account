@@ -1,9 +1,9 @@
 # OpenSpec: NetEase Account Connector
 
 - Spec-ID: `music-connect-netease-account`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Status: `Active`
-- Last-Updated: `2026-07-12`
+- Last-Updated: `2026-07-17`
 
 ## Scope
 
@@ -19,7 +19,7 @@
 - `variant: account`；
 - `authRequirement: required`；
 - `supportedHosts: [desktop]`；
-- `login` 以及实际提供的匿名目录能力。
+- `login`、搜索、歌曲详情、播放地址、歌词与公开歌单能力。
 
 桌面登录 MUST 通过 `https://music.163.com/#/login` 的官方页面完成。连接器返回
 带 `cookieCapture` 的 `open-url` 动作，由宿主打开隔离登录窗口、等待用户在官方页面扫码或登录，并读取至少包含 `MUSIC_U` 的 Cookie。
@@ -33,11 +33,22 @@
 - `logout` 只返回匿名状态；宿主负责清除安装级安全保险库并重新初始化实例。
 - 凭据不得进入 URL、查询参数、日志、错误消息、Store 元数据、Pages 或普通浏览器存储。
 
-## Network boundary
+## Official catalog boundary
 
-可选 `apiBaseUrl` 是用户信任的兼容 HTTPS 目录网关，只承载匿名搜索、歌曲信息、公开歌单、歌词和可用播放地址。连接器 MUST NOT 将账号 Cookie 或其他凭据发送给该网关。
+登录成功后，目录能力 MUST 通过 `MusicConnectorHostContext.officialProviderRequest`
+调用宿主拥有的网易云适配器。连接器只提交经过约束的操作名与分页、歌曲 ID、
+歌单 ID 等非秘密参数；宿主验证实现 ID、操作名、参数范围与固定的
+`https://music.163.com` 端点，并使用同一个隔离登录会话发起请求。
 
-账号歌单、收藏、推荐和会员播放只有在未来具备 DancingMusic 控制的固定可信账号网关，或具备经过协议评审的宿主专用网易云适配器后才可实现和声明。
+账号 Cookie、Token 或 Authorization 不得进入连接器请求参数、URL、日志或普通配置。
+账号版不得要求或暴露 `apiBaseUrl`。宿主官方适配器不可用、登录过期或官方端点失败时，
+目录方法 MUST 抛出明确错误，不得把能力缺口伪装成空搜索、空歌单或无封面。
+
+当前声明的歌单能力仅包括公开歌单目录与公开歌单曲目。账号私有歌单、收藏、推荐和
+会员能力仍不得声明，直到对应的固定宿主操作经过独立评审与测试。
+
+歌曲和歌单封面必须保留网易云真实图片，并把受信任的
+`p1` 至 `p4.music.126.net` HTTP 地址规范化为 HTTPS。
 
 ## Public documentation
 
@@ -45,7 +56,7 @@
 
 ## Release
 
-- 首个版本为 `0.1.0`。
+- 修复账号曲库路径的版本为 `0.2.0`。
 - 构建并提交 `dist/index.js` 和 `dist/index.d.ts`。
-- 发布使用不可变 `v0.1.0` 标签；MusicStore 记录必须提供匹配制品的 SHA-256 SRI。
+- 发布使用不可变 SemVer 标签；MusicStore 记录必须提供匹配制品的 SHA-256 SRI。
 - CI 必须运行测试、重新构建并验证已提交 dist 无差异。

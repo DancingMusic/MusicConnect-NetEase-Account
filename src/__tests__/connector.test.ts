@@ -1,111 +1,136 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { MusicConnectorHostContext } from "@dancingmusic/music-connect";
 import { NeteaseAccountConnector } from "../index";
 
-const BASE = "https://mock-netease.test";
+const AUTH_CONFIG = { cookie: "MUSIC_U=session-secret; __csrf=csrf-value" };
 
-function mockFetch(handler: (url: string) => unknown) {
-  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-    const url = typeof input === "string" ? input : input.toString();
-    return Promise.resolve(new Response(JSON.stringify(handler(url)), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }));
-  });
+function hostWith(
+  handler: (operation: string, params: Record<string, unknown>) => unknown,
+): MusicConnectorHostContext & { officialProviderRequest: ReturnType<typeof vi.fn> } {
+  return {
+    officialProviderRequest: vi.fn(async (operation: string, params: Record<string, unknown> = {}) => (
+      handler(operation, params)
+    )),
+  };
+}
+
+function detailedSong(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 12345,
+    name: "晴天",
+    ar: [{ id: 1, name: "周杰伦" }],
+    al: { id: 2, name: "叶惠美", picUrl: "http://p1.music.126.net/cover.jpg" },
+    dt: 269000,
+    fee: 0,
+    ...overrides,
+  };
 }
 
 describe("NeteaseAccountConnector (contract)", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  it("declares a distinct desktop account variant", async () => {
-    const c = new NeteaseAccountConnector();
-    expect(c.meta.id).toBe("netease-cloud-music-account");
-    expect(c.meta.familyId).toBe("netease-cloud-music");
-    expect(c.meta.capabilities).toContain("search");
-    expect(c.meta.capabilities).toContain("stream");
-    expect(c.meta.capabilities).toContain("login");
-    expect(c.meta.variant).toBe("account");
-    expect(c.meta.authRequirement).toBe("required");
-    expect(c.meta.supportedHosts).toEqual(["desktop"]);
-    expect(c.meta.configSchema?.find(f => f.key === "apiBaseUrl")?.required).toBe(false);
-    expect(c.meta.configSchema?.find(f => f.key === "cookie")).toBeUndefined();
-  });
-
-  it("does not bind to an unowned public proxy by default", async () => {
-    const c = new NeteaseAccountConnector();
-    await c.init();
-    expect(await c.search({ keyword: "周杰伦" })).toEqual({ tracks: [], total: 0, page: 1, pageSize: 20 });
-  });
-
-  it("rejects unsafe gateway addresses", async () => {
-    const c = new NeteaseAccountConnector();
-    await expect(c.init({ apiBaseUrl: "http://gateway.example.com" })).rejects.toThrow("HTTPS");
-    await expect(c.init({ apiBaseUrl: "https://user:secret@gateway.example.com" })).rejects.toThrow("内嵌凭据");
-  });
-
-  it("search returns track-shaped results", async () => {
-    mockFetch((url) => {
-      expect(url).toContain("/cloudsearch");
-      expect(url).toContain(BASE);
-      return {
-        code: 200,
-        result: {
-          songCount: 1,
-          songs: [{
-            id: 12345,
-            name: "晴天",
-            ar: [{ id: 1, name: "周杰伦" }],
-            al: { id: 2, name: "叶惠美", picUrl: "https://img/cover.jpg" },
-            dt: 269000,
-            fee: 0,
-          }],
-        },
-      };
+  it("declares a zero-config desktop account variant", () => {
+    const connector = new NeteaseAccountConnector();
+    expect(connector.meta).toMatchObject({
+      id: "netease-cloud-music-account",
+      familyId: "netease-cloud-music",
+      variant: "account",
+      authRequirement: "required",
+      supportedHosts: ["desktop"],
+      version: "0.2.0",
     });
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    const r = await c.search({ keyword: "周杰伦", pageSize: 10 });
-    expect(r.tracks).toHaveLength(1);
-    const t = r.tracks[0];
-    expect(t.id).toBe("netease:12345");
-    expect(t.title).toBe("晴天");
-    expect(t.artist).toBe("周杰伦");
-    expect(t.album).toBe("叶惠美");
-    expect(t.coverUrl).toBe("https://img/cover.jpg");
-    expect(t.durationSec).toBe(269);
+    expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login"]));
+    expect(connector.meta.configSchema?.some(field => field.key === "apiBaseUrl")).not.toBe(true);
+    expect(connector.meta.configSchema?.some(field => field.key === "cookie")).not.toBe(true);
   });
 
-  it("getStreamUrl returns a playable url + format", async () => {
-    mockFetch((url) => {
-      expect(url).toContain("/song/url/v1");
-      return {
-        code: 200,
-        data: [{
-          id: 12345,
-          url: "https://m801.music.126.net/path/file.mp3",
-          br: 320000,
-          type: "mp3",
-          expi: 1200,
-        }],
-      };
+  it("reports login and host capability gaps instead of returning a fake empty catalog", async () => {
+    const withoutLogin = new NeteaseAccountConnector();
+    await withoutLogin.init({}, hostWith(() => ({})));
+    await expect(withoutLogin.search({ keyword: "周杰伦" })).rejects.toThrow("NETEASE_LOGIN_REQUIRED");
+
+    const withoutProvider = new NeteaseAccountConnector();
+    await withoutProvider.init(AUTH_CONFIG);
+    await expect(withoutProvider.listPlaylists!()).rejects.toThrow("NETEASE_OFFICIAL_PROVIDER_UNAVAILABLE");
+  });
+
+  it("searches through the official host proxy and enriches provider artwork", async () => {
+    const host = hostWith((operation, params) => {
+      if (operation === "netease.catalog.search") {
+        expect(params).toEqual({ keyword: "周杰伦", page: 2, pageSize: 10 });
+        return {
+          code: 200,
+          result: {
+            songCount: 1,
+            songs: [{
+              id: 12345,
+              name: "晴天",
+              artists: [{ id: 1, name: "周杰伦" }],
+              album: { id: 2, name: "叶惠美" },
+              duration: 269000,
+            }],
+          },
+        };
+      }
+      if (operation === "netease.track.detail") {
+        expect(params).toEqual({ ids: [12345] });
+        return { code: 200, songs: [detailedSong()] };
+      }
+      throw new Error(`unexpected operation ${operation}`);
     });
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    const info = await c.getStreamUrl("netease:12345");
-    expect(info).not.toBeNull();
-    expect(info!.url).toMatch(/^https?:\/\//);
-    expect(info!.format).toBe("mp3");
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+
+    const result = await connector.search({ keyword: "周杰伦", page: 2, pageSize: 10 });
+    expect(result).toMatchObject({ total: 1, page: 2, pageSize: 10 });
+    expect(result.tracks[0]).toMatchObject({
+      id: "netease:12345",
+      title: "晴天",
+      artist: "周杰伦",
+      album: "叶惠美",
+      coverUrl: "https://p1.music.126.net/cover.jpg",
+      durationSec: 269,
+    });
+    expect(JSON.stringify(host.officialProviderRequest.mock.calls)).not.toContain("session-secret");
   });
 
-  it("getStreamUrl returns null for locked tracks (paid / unavailable)", async () => {
-    mockFetch(() => ({ code: 200, data: [{ id: 12345, url: null, br: 0, type: "", expi: 0 }] }));
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    expect(await c.getStreamUrl("netease:12345")).toBeNull();
+  it("returns official stream metadata and preserves locked tracks as null", async () => {
+    const host = hostWith((operation, params) => {
+      expect(operation).toBe("netease.track.stream");
+      if (params.id === 12345) {
+        return { code: 200, data: [{ id: 12345, url: "https://m801.music.126.net/file.mp3", br: 320000, type: "mp3", expi: 1200 }] };
+      }
+      return { code: 200, data: [{ id: params.id, url: null, br: 0, type: null, expi: 0 }] };
+    });
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+
+    await expect(connector.getStreamUrl("netease:12345")).resolves.toMatchObject({
+      url: "https://m801.music.126.net/file.mp3",
+      format: "mp3",
+      bitrate: 320000,
+    });
+    await expect(connector.getStreamUrl("netease:67890")).resolves.toBeNull();
   });
 
-  it("listPlaylists returns playlist-shaped results", async () => {
-    mockFetch((url) => {
-      expect(url).toContain("/top/playlist");
+  it("loads lyrics through the official host proxy", async () => {
+    const host = hostWith((operation, params) => {
+      expect(operation).toBe("netease.track.lyrics");
+      expect(params).toEqual({ id: 12345 });
+      return { code: 200, lrc: { lyric: "[00:01.00]晴天" }, tlyric: { lyric: "[00:01.00]Sunny day" } };
+    });
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+
+    await expect(connector.getLyrics!("netease:12345")).resolves.toMatchObject({
+      text: "[00:01.00]晴天",
+      translated: "[00:01.00]Sunny day",
+      timeline: [{ time: 1, text: "晴天", translated: "Sunny day" }],
+    });
+  });
+
+  it("lists public playlists with HTTPS artwork and forwards sort", async () => {
+    const host = hostWith((operation, params) => {
+      expect(operation).toBe("netease.playlist.list");
+      expect(params).toEqual({ category: "华语", page: 2, pageSize: 12, sort: "new" });
       return {
         code: 200,
         total: 1,
@@ -113,93 +138,82 @@ describe("NeteaseAccountConnector (contract)", () => {
           id: 991010,
           name: "经典华语",
           description: "时光长河里的好歌",
-          coverImgUrl: "https://p1.music.126.net/cover.jpg",
+          coverImgUrl: "http://p2.music.126.net/playlist.jpg",
           trackCount: 100,
           creator: { nickname: "网易云音乐" },
         }],
       };
     });
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    const r = await c.listPlaylists!();
-    expect(r.playlists).toHaveLength(1);
-    const p = r.playlists[0];
-    expect(p.id).toBe("netease-playlist:991010");
-    expect(p.name).toBe("经典华语");
-    expect(p.coverUrl).toContain("p1.music.126.net");
-    expect(p.trackCount).toBe(100);
-    expect(p.curator).toBe("网易云音乐");
-    expect(p.externalUrl).toContain("music.163.com");
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+
+    const result = await connector.listPlaylists!({ category: "华语", page: 2, pageSize: 12, sort: "new" });
+    expect(result.playlists[0]).toMatchObject({
+      id: "netease-playlist:991010",
+      name: "经典华语",
+      coverUrl: "https://p2.music.126.net/playlist.jpg",
+      trackCount: 100,
+      curator: "网易云音乐",
+    });
   });
 
-  it("listPlaylists forwards sort param to upstream order=new", async () => {
-    let sawOrder = "";
-    mockFetch((url) => {
-      const m = url.match(/[?&]order=([^&]+)/);
-      if (m) sawOrder = m[1];
-      return { code: 200, total: 0, playlists: [] };
+  it("paginates public playlist tracks without losing total or artwork", async () => {
+    const songs = Array.from({ length: 45 }, (_, index) => detailedSong({
+      id: index + 1,
+      name: `歌曲 ${index + 1}`,
+      al: { id: 2, name: "歌单专辑", picUrl: "http://p3.music.126.net/track.jpg" },
+    }));
+    const host = hostWith((operation, params) => {
+      expect(operation).toBe("netease.playlist.tracks");
+      expect(params).toEqual({ playlistId: 991010, page: 2, pageSize: 20 });
+      return { code: 200, playlist: { trackCount: 45, tracks: songs } };
     });
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    await c.listPlaylists!({ sort: "new" });
-    expect(sawOrder).toBe("new");
-    await c.listPlaylists!({ sort: "hot" });
-    expect(sawOrder).toBe("hot");
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+
+    const result = await connector.getPlaylistTracks!("netease-playlist:991010", { page: 2, pageSize: 20 });
+    expect(result).toMatchObject({ total: 45, page: 2, pageSize: 20 });
+    expect(result.tracks).toHaveLength(20);
+    expect(result.tracks[0]).toMatchObject({ id: "netease:21", coverUrl: "https://p3.music.126.net/track.jpg" });
   });
 
-  it("getPlaylistTracks returns the playlist's songs", async () => {
-    mockFetch((url) => {
-      expect(url).toContain("/playlist/track/all");
-      expect(url).toContain("id=991010");
-      return {
-        code: 200,
-        songs: [{
-          id: 12345, name: "晴天",
-          ar: [{ id: 1, name: "周杰伦" }],
-          al: { id: 2, name: "叶惠美", picUrl: "https://x/c.jpg" },
-          dt: 269000, fee: 0,
-        }],
-      };
-    });
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE });
-    const r = await c.getPlaylistTracks!("netease-playlist:991010");
-    expect(r.tracks).toHaveLength(1);
-    expect(r.tracks[0].id).toBe("netease:12345");
+  it("propagates official provider failures instead of clearing the catalog", async () => {
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, hostWith(() => {
+      throw new Error("NETEASE_OFFICIAL_REQUEST_FAILED_503");
+    }));
+    await expect(connector.listPlaylists!()).rejects.toThrow("NETEASE_OFFICIAL_REQUEST_FAILED_503");
   });
 
   it("starts official desktop cookie capture without proxy polling", async () => {
-    const c = new NeteaseAccountConnector();
-    await c.init();
+    const connector = new NeteaseAccountConnector();
+    await connector.init();
 
-    const result = await c.login({ intent: "start" });
-    expect(result.status).toBe("pending");
-    expect(result.flow).toBe("browser");
-    expect(result.flowId).toBe("netease-web-cookie");
-    expect(result.nextPollMs).toBeUndefined();
-    expect(result.actions).toHaveLength(1);
-    expect(result.actions?.[0]).toMatchObject({
-      type: "open-url",
-      url: "https://music.163.com/#/login",
-      cookieCapture: {
-        provider: "netease",
-        requiredCookieNames: ["MUSIC_U"],
-      },
+    const result = await connector.login({ intent: "start" });
+    expect(result).toMatchObject({
+      status: "pending",
+      flow: "browser",
+      flowId: "netease-web-cookie",
+      actions: [{
+        type: "open-url",
+        url: "https://music.163.com/#/login",
+        cookieCapture: { provider: "netease", requiredCookieNames: ["MUSIC_U"] },
+      }],
     });
+    expect(result.nextPollMs).toBeUndefined();
   });
 
   it("validates captured MUSIC_U and never returns a secret configPatch", async () => {
-    const c = new NeteaseAccountConnector();
-    await c.init();
+    const connector = new NeteaseAccountConnector();
+    await connector.init();
 
-    const invalid = await c.login({
+    await expect(connector.login({
       intent: "continue",
       flowId: "netease-web-cookie",
       input: { cookie: "__csrf=missing-login-cookie" },
-    });
-    expect(invalid.status).toBe("error");
+    })).resolves.toMatchObject({ status: "error" });
 
-    const authenticated = await c.login({
+    const authenticated = await connector.login({
       intent: "continue",
       flowId: "netease-web-cookie",
       input: { cookie: "MUSIC_U=session-secret; __csrf=csrf-value" },
@@ -207,37 +221,17 @@ describe("NeteaseAccountConnector (contract)", () => {
     expect(authenticated.status).toBe("authenticated");
     expect(authenticated.configPatch).toBeUndefined();
     expect(JSON.stringify(authenticated)).not.toContain("session-secret");
-    expect((await c.login({ intent: "status" })).status).toBe("authenticated");
   });
 
-  it("accepts a host-vault cookie through init and logs out without a secret patch", async () => {
-    const c = new NeteaseAccountConnector();
-    await c.init({ cookie: "MUSIC_U=vault-secret" });
-    expect((await c.login({ intent: "status" })).status).toBe("authenticated");
+  it("accepts a host-vault cookie and logs out without exposing it", async () => {
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, hostWith(() => ({})));
+    await expect(connector.login({ intent: "status" })).resolves.toMatchObject({ status: "authenticated" });
 
-    const logout = await c.login({ intent: "logout" });
-    expect(logout.status).toBe("anonymous");
+    const logout = await connector.login({ intent: "logout" });
+    expect(logout).toMatchObject({ status: "anonymous" });
     expect(logout.configPatch).toBeUndefined();
-    expect(JSON.stringify(logout)).not.toContain("vault-secret");
-    expect((await c.login({ intent: "status" })).status).toBe("anonymous");
-  });
-
-  it("never sends an injected account cookie to the configurable anonymous catalog gateway", async () => {
-    const requestedUrls: string[] = [];
-    mockFetch((url) => {
-      requestedUrls.push(url);
-      if (url.includes("/cloudsearch")) {
-        return { code: 200, result: { songCount: 0, songs: [] } };
-      }
-      return { code: 200 };
-    });
-
-    const c = new NeteaseAccountConnector();
-    await c.init({ apiBaseUrl: BASE, cookie: "MUSIC_U=session-secret; __csrf=csrf-value" });
-    await c.search({ keyword: "周杰伦" });
-    expect(requestedUrls).toHaveLength(1);
-    expect(requestedUrls[0]).not.toContain("cookie");
-    expect(requestedUrls[0]).not.toContain("MUSIC_U");
-    expect(requestedUrls[0]).not.toContain("session-secret");
+    expect(JSON.stringify(logout)).not.toContain("session-secret");
+    await expect(connector.search({ keyword: "周杰伦" })).rejects.toThrow("NETEASE_LOGIN_REQUIRED");
   });
 });

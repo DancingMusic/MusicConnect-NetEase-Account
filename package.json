@@ -1,6 +1,6 @@
 {
   "name": "@dancingmusic/music-connect-netease-account",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop NetEase Cloud Music account connector for DancingMusic with host-owned secure cookie capture.",
   "repository": { "type": "git", "url": "https://github.com/DancingMusic/MusicConnect-NetEase-Account.git" },
   "homepage": "https://dancingmusic.github.io/MusicConnect-NetEase-Account/",
@@ -46,7 +46,7 @@
     "@rolldown/binding-linux-x64-gnu": "1.1.5"
   },
   "devDependencies": {
-    "@dancingmusic/music-connect": "github:DancingMusic/MusicConnect#b90bcabdeff428eb1b1bf5a772c40f2c5e4f5013",
+    "@dancingmusic/music-connect": "github:DancingMusic/MusicConnect#3acc1e9eb412f13b663f07d1f1de5e2aabe12947",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^4.1.10"

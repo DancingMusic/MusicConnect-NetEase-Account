@@ -1,7 +1,6 @@
-import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicLyrics, MusicPlaylistQuery, MusicPlaylistList } from '@dancingmusic/music-connect';
+import { MusicConnector, MusicConnectorMeta, MusicConnectorHostContext, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicLyrics, MusicPlaylistQuery, MusicPlaylistList } from '@dancingmusic/music-connect';
 
 interface NeteaseAccountConnectorConfig {
-    apiBaseUrl?: string;
     /** Injected only by the host credential vault. Never ordinary config. */
     cookie?: string;
 }
@@ -9,7 +8,7 @@ declare class NeteaseAccountConnector implements MusicConnector {
     readonly meta: MusicConnectorMeta;
     private api;
     private cookie;
-    init(config?: Record<string, unknown>): Promise<void>;
+    init(config?: Record<string, unknown>, host?: MusicConnectorHostContext): Promise<void>;
     login(request?: MusicConnectorLoginRequest): Promise<MusicConnectorLoginResult>;
     private startWebLogin;
     search(query: MusicListQuery): Promise<MusicSearchResult>;
@@ -21,6 +20,7 @@ declare class NeteaseAccountConnector implements MusicConnector {
         page?: number;
         pageSize?: number;
     }): Promise<MusicSearchResult>;
+    private requireApi;
     private parseId;
     private parsePlaylistId;
 }

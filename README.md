@@ -8,7 +8,7 @@
 - 登录要求：`required`
 - 主机：Desktop
 - 登录：网易云官方网页扫码或网页登录，由 DancingMusic 桌面端安全捕获会话
-- 目录能力：搜索、歌曲信息、可用播放地址、歌词、公开歌单
+- 目录能力：登录后通过宿主隔离会话读取搜索、歌曲信息、可用播放地址、歌词、公开歌单
 
 匿名连接器位于独立仓库
 [`DancingMusic/MusicConnect-NetEase`](https://github.com/DancingMusic/MusicConnect-NetEase)。
@@ -26,28 +26,17 @@
 - 把 Cookie 发给可配置目录网关；
 - 在公开 Pages 页面采集真实凭据。
 
-## 匿名目录网关
+## 官方目录请求
 
-账号会话与目录访问当前严格隔离。若要使用搜索、歌词和公开歌单，可配置自己信任的兼容 HTTPS 网关：
+登录成功后，连接器通过 `MusicConnectorHostContext.officialProviderRequest`
+请求宿主拥有的网易云适配器。宿主只接受固定操作和非秘密参数，并在
+`persist:dancingmusic-netease-login` 隔离会话中访问网易云官方 HTTPS 端点；
+HttpOnly Cookie 不会进入连接器参数、URL、日志或普通配置。
 
-```json
-{
-  "apiBaseUrl": "https://your-netease-gateway.example.com"
-}
-```
+账号版不需要也不接受 `apiBaseUrl`。若宿主版本尚未提供网易云官方适配器，
+连接器会明确报告能力不可用，而不是把搜索、歌单或歌词静默伪装为空。
 
-本地开发允许 `http://localhost`、`http://127.0.0.1` 或 `http://[::1]`。无论是否登录，请求网关时都不会附带 Cookie、Token 或密码。
-
-网关端点：
-
-- `GET /cloudsearch`
-- `GET /song/detail`
-- `GET /song/url/v1`
-- `GET /lyric`
-- `GET /top/playlist`
-- `GET /playlist/track/all`
-
-账号歌单、收藏、推荐和会员播放尚未声明。它们需要固定可信账号网关或经过协议评审的宿主专用适配器，不能把账号凭据发送给任意代理来实现。
+账号私有歌单、收藏、推荐和会员能力尚未声明；当前歌单能力仅覆盖公开目录。
 
 ## 开发与发布
 
@@ -57,10 +46,15 @@ npm test
 npm run build
 ```
 
+针对已打包桌面 Release 联调时，运行 `dancingmusic dev --watch --build`，再以
+`--enable-local-dev-bridge` 启动宿主。该路径只验证构建、身份、加载和无凭据契约，
+连接器必须显示“测试”标识且不得接收账号凭据。真实账号目录验收必须使用固定
+SemVer 与 SRI 的正式安装制品，并由目标宿主 Release 的官方适配器代理会话。
+
 生产环境固定不可变版本：
 
 ```text
-https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-NetEase-Account@v0.1.0/dist/index.js
+https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-NetEase-Account@v0.2.0/dist/index.js
 ```
 
 统一文档：[DancingMusic Docs](https://dancingmusic.github.io/docs/connectors/implementations)
