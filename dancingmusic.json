@@ -4,7 +4,7 @@
   "id": "netease-cloud-music-account",
   "name": "NetEase Cloud Music Account",
   "summary": "Desktop NetEase account catalog through a host-owned isolated provider session.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": {
     "name": "DancingMusic",
     "url": "https://github.com/DancingMusic"
@@ -19,7 +19,7 @@
     "range": ">=0.2.0"
   },
   "artifact": {
-    "url": "https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-NetEase-Account@v0.2.0/dist/index.js",
+    "url": "https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-NetEase-Account@v0.3.0/dist/index.js",
     "integrity": "sha256-cXfwp32gnw07Idmg3qHxaJid7bA3Ke5c8oAJ6diL0pw="
   },
   "capabilities": [

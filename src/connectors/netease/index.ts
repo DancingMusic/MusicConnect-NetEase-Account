@@ -92,7 +92,7 @@ export class NeteaseAccountConnector implements MusicConnector {
     variant: "account",
     authRequirement: "required",
     supportedHosts: ["desktop"],
-    version: "0.2.0",
+    version: "0.3.0",
     capabilities: ["search", "stream", "lyrics", "playlist", "login"],
   };
 
@@ -246,10 +246,32 @@ export class NeteaseAccountConnector implements MusicConnector {
   async listPlaylists(query: MusicPlaylistQuery = {}): Promise<MusicPlaylistList> {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    const cat = query.category || "全部";
+    const api = this.requireApi();
+    // The Music Drawer uses the unclassified list for the signed-in user's
+    // library. Public discovery is intentionally opt-in so an account UI never
+    // labels a public square as “我的歌单”.
+    if (query.category !== "public") {
+      const profile = await api.accountProfile();
+      const userId = profile.profile?.userId;
+      if (profile.code !== 200 || !Number.isSafeInteger(userId) || !userId || userId <= 0) {
+        throw new Error("NETEASE_ACCOUNT_PROFILE_UNAVAILABLE");
+      }
+      const res = await api.accountPlaylists(userId, page, pageSize);
+      if (res.code !== 200 || !res.playlists) {
+        throw new Error("NETEASE_ACCOUNT_PLAYLISTS_UNAVAILABLE");
+      }
+      return {
+        playlists: res.playlists.map(toMusicPlaylist),
+        total: res.total ?? res.playlists.length,
+        page,
+        pageSize,
+      };
+    }
+
+    const cat = "全部";
     // NetEase supports `hot` (default) and `new`. Treat `trending` as hot.
     const order: "hot" | "new" = query.sort === "new" ? "new" : "hot";
-    const res = await this.requireApi().topPlaylist(cat, page, pageSize, order);
+    const res = await api.topPlaylist(cat, page, pageSize, order);
     if (res.code !== 200 || !res.playlists) {
       return { playlists: [], total: 0, page, pageSize };
     }

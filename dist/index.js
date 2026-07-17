@@ -44,6 +44,24 @@ var NeteaseOfficialApi = class {
       sort
     });
   }
+  accountProfile() {
+    return this.request("netease.account.profile");
+  }
+  async accountPlaylists(userId, page = 1, pageSize = 30) {
+    const result = await this.request("netease.account.playlists", {
+      userId,
+      page,
+      pageSize
+    });
+    const playlists = result.playlist ?? [];
+    return {
+      code: result.code,
+      playlists,
+      // The endpoint does not expose a stable total. A conservative page
+      // boundary avoids inventing a library size while preserving pagination.
+      total: result.more ? page * pageSize + 1 : (page - 1) * pageSize + playlists.length
+    };
+  }
   async playlistTracks(id, page = 1, pageSize = 30) {
     const result = await this.request("netease.playlist.tracks", {
       playlistId: id,
@@ -155,7 +173,7 @@ var NeteaseAccountConnector = class {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.2.0",
+      version: "0.3.0",
       capabilities: ["search", "stream", "lyrics", "playlist", "login"]
     };
     this.api = null;
@@ -278,9 +296,27 @@ var NeteaseAccountConnector = class {
   async listPlaylists(query = {}) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    const cat = query.category || "\u5168\u90E8";
+    const api = this.requireApi();
+    if (query.category !== "public") {
+      const profile = await api.accountProfile();
+      const userId = profile.profile?.userId;
+      if (profile.code !== 200 || !Number.isSafeInteger(userId) || !userId || userId <= 0) {
+        throw new Error("NETEASE_ACCOUNT_PROFILE_UNAVAILABLE");
+      }
+      const res2 = await api.accountPlaylists(userId, page, pageSize);
+      if (res2.code !== 200 || !res2.playlists) {
+        throw new Error("NETEASE_ACCOUNT_PLAYLISTS_UNAVAILABLE");
+      }
+      return {
+        playlists: res2.playlists.map(toMusicPlaylist),
+        total: res2.total ?? res2.playlists.length,
+        page,
+        pageSize
+      };
+    }
+    const cat = "\u5168\u90E8";
     const order = query.sort === "new" ? "new" : "hot";
-    const res = await this.requireApi().topPlaylist(cat, page, pageSize, order);
+    const res = await api.topPlaylist(cat, page, pageSize, order);
     if (res.code !== 200 || !res.playlists) {
       return { playlists: [], total: 0, page, pageSize };
     }

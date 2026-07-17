@@ -35,7 +35,7 @@ describe("NeteaseAccountConnector (contract)", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.2.0",
+      version: "0.3.0",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login"]));
     expect(connector.meta.configSchema?.some(field => field.key === "apiBaseUrl")).not.toBe(true);
@@ -127,14 +127,15 @@ describe("NeteaseAccountConnector (contract)", () => {
     });
   });
 
-  it("lists public playlists with HTTPS artwork and forwards sort", async () => {
+  it("lists the signed-in account playlists with HTTPS artwork", async () => {
     const host = hostWith((operation, params) => {
-      expect(operation).toBe("netease.playlist.list");
-      expect(params).toEqual({ category: "华语", page: 2, pageSize: 12, sort: "new" });
+      if (operation === "netease.account.profile") return { code: 200, profile: { userId: 9988 } };
+      expect(operation).toBe("netease.account.playlists");
+      expect(params).toEqual({ userId: 9988, page: 2, pageSize: 12 });
       return {
         code: 200,
-        total: 1,
-        playlists: [{
+        more: false,
+        playlist: [{
           id: 991010,
           name: "经典华语",
           description: "时光长河里的好歌",
@@ -147,7 +148,7 @@ describe("NeteaseAccountConnector (contract)", () => {
     const connector = new NeteaseAccountConnector();
     await connector.init(AUTH_CONFIG, host);
 
-    const result = await connector.listPlaylists!({ category: "华语", page: 2, pageSize: 12, sort: "new" });
+    const result = await connector.listPlaylists!({ page: 2, pageSize: 12 });
     expect(result.playlists[0]).toMatchObject({
       id: "netease-playlist:991010",
       name: "经典华语",
@@ -155,6 +156,18 @@ describe("NeteaseAccountConnector (contract)", () => {
       trackCount: 100,
       curator: "网易云音乐",
     });
+  });
+
+  it("keeps public playlist discovery explicit", async () => {
+    const host = hostWith((operation, params) => {
+      expect(operation).toBe("netease.playlist.list");
+      expect(params).toEqual({ category: "全部", page: 1, pageSize: 12, sort: "new" });
+      return { code: 200, total: 0, playlists: [] };
+    });
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, host);
+    await expect(connector.listPlaylists!({ category: "public", page: 1, pageSize: 12, sort: "new" }))
+      .resolves.toMatchObject({ total: 0, playlists: [] });
   });
 
   it("paginates public playlist tracks without losing total or artwork", async () => {

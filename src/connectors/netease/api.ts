@@ -64,6 +64,19 @@ export interface NeteasePlaylistListResponse {
   playlists: NeteasePlaylist[];
 }
 
+interface NeteaseAccountPlaylistResponse {
+  code: number;
+  playlist?: NeteasePlaylist[];
+  more?: boolean;
+}
+
+export interface NeteaseAccountProfileResponse {
+  code: number;
+  profile?: {
+    userId?: number;
+  };
+}
+
 interface NeteasePlaylistDetailResponse {
   code: number;
   playlist?: {
@@ -134,6 +147,26 @@ export class NeteaseOfficialApi {
       pageSize,
       sort,
     });
+  }
+
+  accountProfile(): Promise<NeteaseAccountProfileResponse> {
+    return this.request<NeteaseAccountProfileResponse>("netease.account.profile");
+  }
+
+  async accountPlaylists(userId: number, page = 1, pageSize = 30): Promise<NeteasePlaylistListResponse> {
+    const result = await this.request<NeteaseAccountPlaylistResponse>("netease.account.playlists", {
+      userId,
+      page,
+      pageSize,
+    });
+    const playlists = result.playlist ?? [];
+    return {
+      code: result.code,
+      playlists,
+      // The endpoint does not expose a stable total. A conservative page
+      // boundary avoids inventing a library size while preserving pagination.
+      total: result.more ? page * pageSize + 1 : (page - 1) * pageSize + playlists.length,
+    };
   }
 
   async playlistTracks(id: number, page = 1, pageSize = 30): Promise<NeteasePlaylistTracksResponse> {
