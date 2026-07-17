@@ -173,7 +173,7 @@ var NeteaseAccountConnector = class {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.3.0",
+      version: "0.3.1",
       capabilities: ["search", "stream", "lyrics", "playlist", "login"]
     };
     this.api = null;
@@ -187,7 +187,29 @@ var NeteaseAccountConnector = class {
   async login(request = { intent: "status" }) {
     const intent = request.intent ?? "status";
     if (intent === "status") {
-      return this.cookie ? { status: "authenticated", message: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u5DF2\u7531\u5BBF\u4E3B\u5B89\u5168\u52A0\u8F7D" } : { status: "anonymous", message: "\u5C1A\u672A\u767B\u5F55\u7F51\u6613\u4E91\u97F3\u4E50" };
+      if (!this.cookie) return { status: "anonymous", message: "\u5C1A\u672A\u767B\u5F55\u7F51\u6613\u4E91\u97F3\u4E50" };
+      if (!this.api) return { status: "authenticated", message: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u5DF2\u7531\u5BBF\u4E3B\u5B89\u5168\u52A0\u8F7D" };
+      try {
+        const profile = await this.api.accountProfile();
+        const userId = profile.profile?.userId;
+        if (profile.code !== 200 || !Number.isSafeInteger(userId) || !userId || userId <= 0) {
+          return { status: "authenticated", message: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u5DF2\u7531\u5BBF\u4E3B\u5B89\u5168\u52A0\u8F7D\uFF0C\u8D44\u6599\u6682\u672A\u8FD4\u56DE" };
+        }
+        const vipType = [profile.account?.vipType, profile.profile?.vipType].find((value) => Number.isSafeInteger(value) && Number(value) > 0);
+        const membership = vipType ? { active: true, label: "\u9ED1\u80F6VIP", tier: "\u9ED1\u80F6VIP" } : { active: false, label: "\u975E\u4F1A\u5458", tier: "\u514D\u8D39" };
+        return {
+          status: "authenticated",
+          message: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u5DF2\u7531\u5BBF\u4E3B\u5B89\u5168\u52A0\u8F7D",
+          user: {
+            id: String(userId),
+            ...profile.profile?.nickname ? { name: profile.profile.nickname } : {},
+            ...secureCoverUrl(profile.profile?.avatarUrl) ? { avatarUrl: secureCoverUrl(profile.profile?.avatarUrl) } : {}
+          },
+          membership
+        };
+      } catch {
+        return { status: "authenticated", message: "\u7F51\u6613\u4E91\u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u5DF2\u7531\u5BBF\u4E3B\u5B89\u5168\u52A0\u8F7D\uFF0C\u8D44\u6599\u6682\u4E0D\u53EF\u7528" };
+      }
     }
     if (intent === "logout") {
       this.cookie = "";

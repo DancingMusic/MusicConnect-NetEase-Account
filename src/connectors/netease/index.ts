@@ -92,7 +92,7 @@ export class NeteaseAccountConnector implements MusicConnector {
     variant: "account",
     authRequirement: "required",
     supportedHosts: ["desktop"],
-    version: "0.3.0",
+    version: "0.3.1",
     capabilities: ["search", "stream", "lyrics", "playlist", "login"],
   };
 
@@ -112,9 +112,32 @@ export class NeteaseAccountConnector implements MusicConnector {
   async login(request: MusicConnectorLoginRequest = { intent: "status" }): Promise<MusicConnectorLoginResult> {
     const intent = request.intent ?? "status";
     if (intent === "status") {
-      return this.cookie
-        ? { status: "authenticated", message: "网易云音乐账号会话已由宿主安全加载" }
-        : { status: "anonymous", message: "尚未登录网易云音乐" };
+      if (!this.cookie) return { status: "anonymous", message: "尚未登录网易云音乐" };
+      if (!this.api) return { status: "authenticated", message: "网易云音乐账号会话已由宿主安全加载" };
+      try {
+        const profile = await this.api.accountProfile();
+        const userId = profile.profile?.userId;
+        if (profile.code !== 200 || !Number.isSafeInteger(userId) || !userId || userId <= 0) {
+          return { status: "authenticated", message: "网易云音乐账号会话已由宿主安全加载，资料暂未返回" };
+        }
+        const vipType = [profile.account?.vipType, profile.profile?.vipType]
+          .find(value => Number.isSafeInteger(value) && Number(value) > 0);
+        const membership = vipType
+          ? { active: true, label: "黑胶VIP", tier: "黑胶VIP" }
+          : { active: false, label: "非会员", tier: "免费" };
+        return {
+          status: "authenticated",
+          message: "网易云音乐账号会话已由宿主安全加载",
+          user: {
+            id: String(userId),
+            ...(profile.profile?.nickname ? { name: profile.profile.nickname } : {}),
+            ...(secureCoverUrl(profile.profile?.avatarUrl) ? { avatarUrl: secureCoverUrl(profile.profile?.avatarUrl) } : {}),
+          },
+          membership,
+        };
+      } catch {
+        return { status: "authenticated", message: "网易云音乐账号会话已由宿主安全加载，资料暂不可用" };
+      }
     }
     if (intent === "logout") {
       this.cookie = "";

@@ -74,6 +74,12 @@ export interface NeteaseAccountProfileResponse {
   code: number;
   profile?: {
     userId?: number;
+    nickname?: string;
+    avatarUrl?: string;
+    vipType?: number;
+  };
+  account?: {
+    vipType?: number;
   };
 }
 

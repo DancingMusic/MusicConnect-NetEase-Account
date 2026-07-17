@@ -35,7 +35,7 @@ describe("NeteaseAccountConnector (contract)", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.3.0",
+      version: "0.3.1",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login"]));
     expect(connector.meta.configSchema?.some(field => field.key === "apiBaseUrl")).not.toBe(true);
@@ -50,6 +50,44 @@ describe("NeteaseAccountConnector (contract)", () => {
     const withoutProvider = new NeteaseAccountConnector();
     await withoutProvider.init(AUTH_CONFIG);
     await expect(withoutProvider.listPlaylists!()).rejects.toThrow("NETEASE_OFFICIAL_PROVIDER_UNAVAILABLE");
+  });
+
+  it("returns the safe official profile and membership summary with authenticated status", async () => {
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, hostWith(operation => {
+      expect(operation).toBe("netease.account.profile");
+      return {
+        code: 200,
+        profile: {
+          userId: 9988,
+          nickname: "无花果树上无花果",
+          avatarUrl: "http://p1.music.126.net/avatar.jpg",
+          vipType: 110,
+        },
+        account: { vipType: 11 },
+      };
+    }));
+
+    await expect(connector.login({ intent: "status" })).resolves.toMatchObject({
+      status: "authenticated",
+      user: {
+        id: "9988",
+        name: "无花果树上无花果",
+        avatarUrl: "https://p1.music.126.net/avatar.jpg",
+      },
+      membership: { active: true, label: "黑胶VIP", tier: "黑胶VIP" },
+    });
+  });
+
+  it("keeps an authenticated status when the optional profile summary is unavailable", async () => {
+    const connector = new NeteaseAccountConnector();
+    await connector.init(AUTH_CONFIG, hostWith(() => {
+      throw new Error("NETEASE_OFFICIAL_REQUEST_FAILED_503");
+    }));
+    const result = await connector.login({ intent: "status" });
+    expect(result).toMatchObject({ status: "authenticated" });
+    expect(result.user).toBeUndefined();
+    expect(result.membership).toBeUndefined();
   });
 
   it("searches through the official host proxy and enriches provider artwork", async () => {
